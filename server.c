@@ -6,11 +6,28 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <netdb.h>
 
-struct childargs { // child process arguments
+struct client_data { // child process arguments
     int socketfd;
     struct sockaddr* client_addr;
     int client_len;
+};
+
+struct DHCP_offer_args {
+    u_int8_t op;
+    u_int8_t htype;
+    u_int8_t hlen;
+    u_int8_t hops;
+    u_int32_t xid;
+    u_int16_t secs;
+    u_int16_t flags;
+    u_int32_t ciaddr;
+    u_int32_t yiaddr;
+    u_int32_t siaddr;
+    u_int32_t giaddr;
+    char chaddr[16];
+    char sname[64];
 };
 
 void error(const char *msg)
@@ -19,12 +36,18 @@ void error(const char *msg)
     exit(1);
 }
 
-void* sendMessage(void* args) {
+void* DHCPOffer(void* args) {
     char buffer[255];
+    char hostbuffer[255];
     bzero(buffer, sizeof(buffer));
-    struct childargs* client_args = (struct childargs*)args;
+    
+    struct client_data* client_args = (struct client_data*)args;
 
-    strcpy(buffer, "Message sent from the server - Hello");
+    if(gethostname(hostbuffer, sizeof(hostbuffer)) < 0)
+        perror("There was an error retrieving hostname");
+
+    strcpy(buffer, "Message sent from the server. My name is ");
+    strcat(buffer, hostbuffer);
     sendto(client_args->socketfd, buffer, sizeof(buffer), 0, client_args->client_addr, client_args->client_len);
 }
 
@@ -49,22 +72,24 @@ int main() {
     clientLength = sizeof(client_addr);
 
     while (1) {
-        char buffer[255]; // Initialize buffer for messages
+        char buffer[576]; // Initialize buffer for messages
 
-        struct childargs th_arg; // Defines an struct for arguments to the child function
+        struct client_data th_arg; // Defines an struct for arguments to the child function
         th_arg.client_len = clientLength;
         th_arg.client_addr = (struct sockaddr*) &client_addr;
         th_arg.socketfd = socketfd;
 
-        bzero(buffer, 255); // Fill all the bytes in the buffer with zeros
-        recvfrom(socketfd, buffer, 255, 0, (struct sockaddr*) &client_addr, &clientLength);
-        printf("Message recieved: %s", buffer);
+        bzero(buffer, 576); // Fill all the bytes in the buffer with zeros
+        recvfrom(socketfd, buffer, 576, 0, (struct sockaddr*) &client_addr, &clientLength);
+        buffer[576] = '\0';
+
+        u_int8_t op = buffer[0];
+        printf("Received message: %u\n", op);
 
         pthread_t child_th; // Create a child thread
 
-        if (pthread_create(&child_th, NULL, &sendMessage, &th_arg) != 0)
+        if (pthread_create(&child_th, NULL, &DHCPOffer, &th_arg) != 0)
             error("There was an error creating a child process.");
-        
     }
 
     close(socketfd);
