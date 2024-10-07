@@ -26,17 +26,14 @@ class DHCP_connection:
         packet += (0).to_bytes(4, "big") # giaddr - Relay agent IP address
         packet += self.hardware_id # chaddr - Client hardware address (e.g MAC)
         packet += (0).to_bytes(64, "big") # sname - server host name (null terminated)
-        # packet += (0).to_bytes(128, "big") # file - optional boot file name
-        # packet += (0).to_bytes(312, "big") # options - optional parameters field
+        packet += (0).to_bytes(128, "big") # file - optional boot file name
+        packet += (0).to_bytes(312, "big") # options - optional parameters field
         packet += b'\xff'
         return packet
 
-
-
-
 if __name__ == "__main__":
     mysock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
+    
     # Set the client to send messages via broadcast when trying to get IP args
     mysock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
@@ -54,4 +51,4 @@ if __name__ == "__main__":
         print(f"This pc's hardware id is: {int.from_bytes(dhcp.hardware_id, 'big')}")
         buffer, connection_address = mysock.recvfrom(576)
         print("Packet received from server: ")
-        print(buffer)
+        print(int.from_bytes(buffer[20:24], 'big'))

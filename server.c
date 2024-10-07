@@ -8,28 +8,18 @@
 #include <pthread.h>
 #include <netdb.h>
 
+#define UDP_PACKET_SIZE 576
+#define UDP_SERVER_PORT 67
+
 struct client_data { // child process arguments
     int socketfd;
     struct sockaddr* client_addr;
     int client_len;
-    char buffer[136];
+    char buffer[UDP_PACKET_SIZE];
 };
 
-struct DHCP_offer_args {
-    uint8_t op;
-    uint8_t htype;
-    uint8_t hlen;
-    uint8_t hops;
-    uint32_t xid;
-    uint16_t secs;
-    uint16_t flags;
-    uint32_t ciaddr;
-    uint32_t yiaddr;
-    uint32_t siaddr;
-    uint32_t giaddr;
-    uint64_t chaddr;
-    u_int32_t offered_addr;
-};
+
+/******************************* UTILITY FUNCTIONS ********************************/
 
 void error(const char *msg)
 {
@@ -37,10 +27,68 @@ void error(const char *msg)
     exit(1);
 }
 
-void serialize_int(unsigned char* buffer, int value, int offset, int bytes) {
+/*
+
+Calculates the amount of bits a subnet mask is using by doing bitwise AND operations
+of every octet of the mask
+
+*/
+
+int calc_subnet_bits(unsigned char* subnet_mask) {
+    int total_bits = 0;
+    unsigned char* subnet;
+    unsigned char* token;
+
+    strcpy(subnet, subnet_mask);
+    token = strtok(subnet, "."); // Splits the subnet mask into the 4 octets
+
+    // Loop while there are more tokens to get 
+    while (token != NULL) {
+        // Each 'token' is the octet which is separated with the delimiter (.)
+        int current_oct = atoi(token);
+
+        /*
+            Comparisons are made by doing a bitwise AND operation with the number 1.
+            if the LSB from the current octet is 1, it means is using that bit, so,
+            the bitwise AND returns 1. Next, the octet is shifted 1 bit to the right
+            to make the comparison with the next LSB.
+
+            The process repeats until all bits are shifted and the value of the octet
+            is 0.
+        */
+        while (current_oct != 0) {
+            total_bits += current_oct & 1;
+            current_oct = current_oct >> 1;
+        }
+
+        // Get the next octet
+        token = strtok(NULL, ".");
+    }
+
+    return total_bits;
+}
+
+void get_available_address() {
+    FILE* file = fopen("../addresses.txt", "r");
+    unsigned char line[256];
+    unsigned char subnet[256];
+    unsigned char* token;
+    int current_line = 1;
+
+    fgets(line, sizeof(line), file);
+    strcpy(subnet, line);
+    fclose(file);
+
+    token = strtok(subnet, "=");
+    token = strtok(NULL, "=");
+
+    printf("%i", calc_subnet_bits(token));
+}
+
+void serialize_int(unsigned char* buffer, uint64_t value, int offset, int bytes) {
     int current_offset = offset;
     for (int i = bytes; i > 0; i--) {
-        buffer[current_offset] = value >> (8*(i-1));
+        buffer[current_offset] = value >> (8*(i-1)) & 0xFF;
         current_offset += 1;
     }
 }
@@ -72,6 +120,25 @@ uint64_t get_nbyte_number(char* buffer, int offset, int bytes) {
     return number;
 }
 
+uint32_t get_ip(struct sockaddr* ip_address) {
+    return (*(struct sockaddr_in*)ip_address).sin_addr.s_addr;
+}
+
+void show_ip_repr(struct sockaddr* ip_address) {
+    uint32_t ip_int = (*(struct sockaddr_in*)ip_address).sin_addr.s_addr;
+    printf("%u\n", ip_int);
+
+    // IPv4 takes 1 byte for every dot (.) separated number from 0 to 255; x.x.x.x 4 bytes
+    unsigned char ip_bytes[4];
+    
+    ip_bytes[0] = ip_int;
+    ip_bytes[1] = ip_int >> 8;
+    ip_bytes[2] = ip_int >> 16;
+    ip_bytes[3] = ip_int >> 24;
+
+    printf("%d.%d.%d.%d\n", ip_bytes[0],ip_bytes[1],ip_bytes[2],ip_bytes[3]);
+}
+
 void print_packet(char* buffer, int size) {
     for (int i = 0; i < size; i++) {
         printf("%02x ", (u_int8_t)buffer[i]);
@@ -79,34 +146,29 @@ void print_packet(char* buffer, int size) {
     printf("\n");
 }
 
+
+
+/******************************* DHCP OPERATIONS ********************************/
+
+
+
 void* DHCPOffer(void* args) {
     struct client_data client_args = *(struct client_data*)args;
-    struct DHCP_offer_args offer;
+    uint32_t offered_ip_dummy = 3232235819;
 
-    // offer.op = client_args.buffer[0];
-    // offer.htype = client_args.buffer[1];
-    // offer.hlen = client_args.buffer[2];
-    // offer.hops = client_args.buffer[3];
-    // offer.xid = (uint32_t) get_nbyte_number(client_args.buffer, 4, 4);
-    // offer.secs = (uint16_t) get_nbyte_number(client_args.buffer, 8, 2);
-    // offer.flags = (uint16_t) get_nbyte_number(client_args.buffer, 10, 2);
-    // offer.ciaddr = (uint32_t) get_nbyte_number(client_args.buffer, 12, 4);
-    // offer.yiaddr = (uint32_t) get_nbyte_number(client_args.buffer, 16, 4);
-    // offer.siaddr = (uint32_t) get_nbyte_number(client_args.buffer, 20, 4);
-    // offer.giaddr = (uint32_t) get_nbyte_number(client_args.buffer, 24, 4);
-    // offer.chaddr = (uint32_t) get_nbyte_number(client_args.buffer, 28, 16);
-    serialize_char(client_args.buffer, 0, 0);
-    serialize_int(client_args.buffer, 2, 1, 1);
+    serialize_int(client_args.buffer, (u_int64_t) 2, 0, 1);
+    serialize_int(client_args.buffer, (u_int64_t) offered_ip_dummy, 20, 4);
 
-    printf("%lu", get_nbyte_number(client_args.buffer, 28, 16));
 
     sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
 }
 
 int main() {
-    int serverPort = 67;
     struct sockaddr_in server_addr, client_addr;
     socklen_t clientLength;
+
+    get_available_address();
+    exit(0);
 
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (socketfd < 0)
@@ -116,7 +178,7 @@ int main() {
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(serverPort);
+    server_addr.sin_port = htons(UDP_SERVER_PORT);
 
     if (bind(socketfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0)
         error("Error trying to bind the server");
@@ -124,20 +186,20 @@ int main() {
     clientLength = sizeof(client_addr);
 
     while (1) {
-        unsigned buffer[136]; // Initialize buffer for messages
-        bzero(buffer, 136); // Fill all the bytes in the buffer with zeros
+        unsigned buffer[UDP_PACKET_SIZE]; // Initialize buffer for messages
+        bzero(buffer, UDP_PACKET_SIZE); // Fill all the bytes in the buffer with zeros
 
-        recvfrom(socketfd, buffer, 136, 0, (struct sockaddr*) &client_addr, &clientLength);
+        recvfrom(socketfd, buffer, UDP_PACKET_SIZE, 0, (struct sockaddr*) &client_addr, &clientLength);
 
         struct client_data th_arg; // Defines an struct for arguments to the child function
         th_arg.client_len = clientLength;
         th_arg.client_addr = (struct sockaddr*) &client_addr;
         th_arg.socketfd = socketfd;
-        memcpy(th_arg.buffer, buffer, 136);
+        memcpy(th_arg.buffer, buffer, UDP_PACKET_SIZE);
 
-        print_packet(th_arg.buffer, 136);
+        print_packet(th_arg.buffer, UDP_PACKET_SIZE);
 
-        pthread_t child_th; // Create a child thread
+        pthread_t child_th; // Store the created child thread
 
         if (pthread_create(&child_th, NULL, &DHCPOffer, &th_arg) != 0)
             error("There was an error creating a child process.");
