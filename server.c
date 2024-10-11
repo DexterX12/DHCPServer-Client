@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include <netdb.h>
+#include <time.h> 
 
 #define UDP_PACKET_SIZE 576
 #define UDP_SERVER_PORT 67
@@ -15,13 +16,15 @@ typedef struct { // child process arguments
     int socketfd;
     struct sockaddr* client_addr;
     int client_len;
+    struct sockaddr_in server_addr;
     char buffer[UDP_PACKET_SIZE];
-} client_data;
+} socket_data;
 
 typedef struct {
     uint32_t IP_ADDR; // Client's assigned IP address
     uint64_t MAC_ADDR; // Client's MAC address
     int LEASE; // client's assigned lease time
+    int AVAILABLE; // 0 for already in use / offered but not accepted (yet), 1 for available
 } addr_lease;
 
 typedef struct {
@@ -31,6 +34,7 @@ typedef struct {
     uint32_t DEFAULT_GATEWAY;
     int LEASE_TIME; // Network's default lease time
     addr_lease* ADDR_LIST; // Its size will be defined by the subnet mask
+    int ADDR_LIST_SIZE; // Self explanatory
 } addr_pool;
 
 addr_pool address_pool;
@@ -41,6 +45,15 @@ void error(const char *msg)
 {
     perror(msg);
     exit(1);
+}
+
+char* int_to_str(int value) {
+    char* buffer;
+    int length = snprintf(NULL, 0, "%d", value);
+    buffer = malloc(sizeof(char) * (length+1));
+    snprintf(buffer, sizeof(buffer), "%d", value);
+
+    return buffer;
 }
 
 unsigned char* int_to_ip(uint32_t ip) {
@@ -57,7 +70,7 @@ unsigned char* int_to_ip(uint32_t ip) {
 uint32_t ip_to_int (unsigned char* ip) {
     uint32_t ip_int = 0;
 
-    unsigned char* str_base_ip = (char*)malloc(sizeof(ip));
+    unsigned char* str_base_ip = malloc(sizeof(ip));
     char* token;
     int i = 4;
 
@@ -91,14 +104,14 @@ void set_network_params(addr_pool* pool) {
     token = strtok(line, "=");
     token = strtok(NULL, "=");
     unsigned char* token2 = strtok(token, "/");
-    unsigned char* ip_str = (char*)malloc(sizeof(token2));
+    unsigned char* ip_str = malloc(sizeof(token2));
     strcpy(ip_str, token2);
 
     token2 = strtok(NULL, "/");
-    unsigned char* CIDR = (char*)malloc(sizeof(token2));
+    unsigned char* CIDR = malloc(sizeof(token2));
     strcpy(CIDR, token2);
 
-    available_addresses = (1 << (32 - atoi(CIDR))) - 2;
+    available_addresses = (1 << (32 - atoi(CIDR))) - 2; // 2 for network's address & broadcast
     network_mask = -1 << 32 - atoi(CIDR);
     network_address = ip_to_int(ip_str);
     network_address = network_mask & network_address;
@@ -132,6 +145,21 @@ void set_network_params(addr_pool* pool) {
     pool->DNS = network_dns;
     pool->LEASE_TIME = network_lease;
     pool->ADDR_LIST = malloc(sizeof(addr_lease) * available_addresses);
+
+    // Assigning all IPs as available, with the exception of the gateway IP
+    for (int i = 0; i < available_addresses; i++) {
+        if ((network_address + (i+1)) == network_gateway)
+            continue;
+            
+        pool->ADDR_LIST[i].AVAILABLE = 1;
+        pool->ADDR_LIST[i].IP_ADDR = network_address + (i+1);
+    }
+
+    pool->ADDR_LIST_SIZE = available_addresses;
+}
+
+time_t get_lease(int base_lease) {
+    return time(NULL) + base_lease;
 }
 
 void serialize_int(unsigned char* buffer, uint64_t value, int offset, int bytes) {
@@ -142,8 +170,10 @@ void serialize_int(unsigned char* buffer, uint64_t value, int offset, int bytes)
     }
 }
 
-void serialize_char(unsigned char* buffer,int offset, char value) {
-    buffer[offset] = value;
+void serialize_char(unsigned char* buffer, char* value, int offset) {
+    for (int i = 0; i < strlen(value); i++) {
+        buffer[offset + i] = value[i];
+    }
 }
 
 uint64_t get_nbyte_number(char* buffer, int offset, int bytes) {
@@ -155,6 +185,7 @@ uint64_t get_nbyte_number(char* buffer, int offset, int bytes) {
         number += (uint64_t)(unsigned char)buffer[current_offset] << (8*(i - 1));
         current_offset += 1;
     }
+
     return number;
 }
 
@@ -175,7 +206,7 @@ void show_network_params(addr_pool* pool) {
     unsigned char* network_gateway_str = int_to_ip(pool->DEFAULT_GATEWAY);
     unsigned char* network_subnet_str = int_to_ip(pool->SUBNET_MASK);
     
-    printf("%s", "Current parameters for this DHCP server:\n");
+    printf("\n%s\n", "Current parameters for this DHCP server:");
     printf("%s", "Network address: ");
     printf("%d.%d.%d.%d\n", network_ip_str[0], network_ip_str[1], network_ip_str[2], network_ip_str[3]);
     printf("%s", "Network subnet mask: ");
@@ -184,28 +215,50 @@ void show_network_params(addr_pool* pool) {
     printf("%d.%d.%d.%d\n", network_gateway_str[0], network_gateway_str[1], network_gateway_str[2], network_gateway_str[3]);
     printf("%s", "Network DNS: ");
     printf("%d.%d.%d.%d\n", network_dns_str[0], network_dns_str[1], network_dns_str[2], network_dns_str[3]);
+    printf("%s", "Available addresses: ");
+    printf("%i | (%i without gateway)\n", (pool->ADDR_LIST_SIZE) - 1, pool->ADDR_LIST_SIZE);
+    printf("%s", "Current lease time: ");
+    printf("%i seconds\n", pool->LEASE_TIME);
 }
 
 /******************************* DHCP OPERATIONS ********************************/
 
-void* DHCPOffer(void* args) {
-    client_data client_args = *(client_data*)args;
-    uint32_t offered_ip_dummy = 3232235806;
+void* DHCPOFFER(void* args) {
+    socket_data client_args = *(socket_data*)args;
+    uint32_t yiaddr;
+    int yiaddr_pos; // IP offered to client's position, if the operation fails or declines
+    char opt_lease[64] = "IP_LEASE_TIME=";
+    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPOFFER\n";
+    
+    strcat(opt_lease, int_to_str(address_pool.LEASE_TIME));
+    strcat(opt_lease, "\n");
 
-    serialize_int(client_args.buffer, (u_int64_t) 2, 0, 1);
-    serialize_int(client_args.buffer, (u_int64_t) offered_ip_dummy, 20, 4);
+    for (int i = 0; i < address_pool.ADDR_LIST_SIZE; i++) {
+        if (address_pool.ADDR_LIST[i].AVAILABLE) {
+            yiaddr = address_pool.ADDR_LIST[i].IP_ADDR;
+            address_pool.ADDR_LIST[i].AVAILABLE = 0; // IP reservation for the operation
+            yiaddr_pos = i;
+            break;
+        }
+    }
 
+    serialize_int(client_args.buffer, 2, 0, 1);
+    serialize_int(client_args.buffer, yiaddr, 16, 4);
+    serialize_int(client_args.buffer, client_args.server_addr.sin_addr.s_addr, 20, 4);
+    serialize_char(client_args.buffer, opt_lease, 232);
+    serialize_char(client_args.buffer, opt_message_type, 232 + strlen(opt_lease));
 
     sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
+}
+
+void DHCPACK (void* args) {
+    socket_data client_args = *(socket_data*)args;
+    
 }
 
 int main() {
     struct sockaddr_in server_addr, client_addr;
     socklen_t clientLength;
-
-    // set_network_params(&address_pool);
-    // show_network_params(&address_pool);
-    // exit(0);
 
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (socketfd < 0)
@@ -222,23 +275,25 @@ int main() {
 
     clientLength = sizeof(client_addr);
 
+    set_network_params(&address_pool);
+    show_network_params(&address_pool);
+
     while (1) {
         unsigned buffer[UDP_PACKET_SIZE]; // Initialize buffer for messages
         bzero(buffer, UDP_PACKET_SIZE); // Fill all the bytes in the buffer with zeros
 
         recvfrom(socketfd, buffer, UDP_PACKET_SIZE, 0, (struct sockaddr*) &client_addr, &clientLength);
 
-        client_data th_arg; // Defines an struct for arguments to the child function
+        socket_data th_arg; // Defines an struct for arguments to the child function
         th_arg.client_len = clientLength;
         th_arg.client_addr = (struct sockaddr*) &client_addr;
+        th_arg.server_addr = server_addr;
         th_arg.socketfd = socketfd;
         memcpy(th_arg.buffer, buffer, UDP_PACKET_SIZE);
 
-        print_packet(th_arg.buffer, UDP_PACKET_SIZE);
-
         pthread_t child_th; // Store the created child thread
 
-        if (pthread_create(&child_th, NULL, &DHCPOffer, &th_arg) != 0)
+        if (pthread_create(&child_th, NULL, &DHCPOFFER, &th_arg) != 0)
             error("There was an error creating a child process.");
     }
 
