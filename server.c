@@ -10,6 +10,7 @@
 #include <time.h> 
 
 #define UDP_PACKET_SIZE 576
+#define OPTIONS_BYTE_SIZE 312
 #define UDP_SERVER_PORT 67
 
 typedef struct { // child process arguments
@@ -23,7 +24,7 @@ typedef struct { // child process arguments
 typedef struct {
     uint32_t IP_ADDR; // Client's assigned IP address
     uint64_t MAC_ADDR; // Client's MAC address
-    int LEASE; // client's assigned lease time
+    time_t LEASE; // client's assigned lease time
     int AVAILABLE; // 0 for already in use / offered but not accepted (yet), 1 for available
 } addr_lease;
 
@@ -37,7 +38,14 @@ typedef struct {
     int ADDR_LIST_SIZE; // Self explanatory
 } addr_pool;
 
+// This type definition exists for the creation of an array of DHCP Operations
+// This can let easily modify the amount of messages for reply to the client
+// And be order-independent
+typedef void* (*DHCP_FUNCTIONS)(void*);
+
+const char* DHCP_MESSAGES[] = {"DHCPDISCOVER", "DHCPREQUEST"};
 addr_pool address_pool;
+
 
 /******************************* UTILITY FUNCTIONS ********************************/
 
@@ -54,6 +62,26 @@ char* int_to_str(int value) {
     snprintf(buffer, sizeof(buffer), "%d", value);
 
     return buffer;
+}
+
+char* int_to_mac(uint64_t mac) {
+    int size = snprintf(NULL, 0, "%lx", mac);
+    char hex[size];
+    sprintf(hex, "%lx", mac);
+    
+    char* hex_sep = malloc((sizeof(char) * (size + (size/2))));
+    int pos_counter = 1;
+    
+    for (int i = 0; i < sizeof(hex)/sizeof(hex[0]); i++) {
+        char char_str[] = {hex[i]};
+        
+        strcat(hex_sep, char_str);
+        
+        if ((i + 1)%2 == 0 && (i + 1) < sizeof(hex)/sizeof(hex[0]) - 1)
+            strcat(hex_sep, ":");
+    }
+    
+    return hex_sep;
 }
 
 unsigned char* int_to_ip(uint32_t ip) {
@@ -149,17 +177,45 @@ void set_network_params(addr_pool* pool) {
     // Assigning all IPs as available, with the exception of the gateway IP
     for (int i = 0; i < available_addresses; i++) {
         if ((network_address + (i+1)) == network_gateway)
-            continue;
-            
-        pool->ADDR_LIST[i].AVAILABLE = 1;
+            pool->ADDR_LIST[i].AVAILABLE = 0;    
+        else  
+            pool->ADDR_LIST[i].AVAILABLE = 1;
+
         pool->ADDR_LIST[i].IP_ADDR = network_address + (i+1);
     }
 
     pool->ADDR_LIST_SIZE = available_addresses;
+
+    free(ip_str);
+    free(CIDR);
 }
 
 time_t get_lease(int base_lease) {
     return time(NULL) + base_lease;
+}
+
+int get_dhcp_message(unsigned char* buffer) {
+    unsigned char options[OPTIONS_BYTE_SIZE]; // Initialize buffer for all possible options
+    char* token;
+
+    for (int i = 0; i < OPTIONS_BYTE_SIZE; i++) {
+        options[i] = buffer[236 + i]; // 236 is the beginning of the options field inside the packet
+    }
+
+    token = strtok(options, "\n");
+    token = strtok(NULL, "\n");
+
+    char* token2;
+    token2 = strtok(token, "=");
+    token2 = strtok(NULL, "=");
+
+    for (int i = 0; i < (sizeof(DHCP_MESSAGES) / sizeof(DHCP_MESSAGES[0])); i++) {
+        if (strcmp(token2, DHCP_MESSAGES[i]) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 void serialize_int(unsigned char* buffer, uint64_t value, int offset, int bytes) {
@@ -219,6 +275,33 @@ void show_network_params(addr_pool* pool) {
     printf("%i | (%i without gateway)\n", (pool->ADDR_LIST_SIZE) - 1, pool->ADDR_LIST_SIZE);
     printf("%s", "Current lease time: ");
     printf("%i seconds\n", pool->LEASE_TIME);
+
+    free(network_ip_str);
+    free(network_dns_str);
+    free(network_gateway_str);
+    free(network_subnet_str);
+}
+
+void show_lease (addr_pool* pool) {
+    printf("%s\n", "    MAC ADDRESS    |    IP ADDRESS    |    LEASE EXPIRATION (EPOCH)");
+    printf("%s\n", "-----------------------------------------------------------------------");
+    
+    for (int i = 0; i < (*pool).ADDR_LIST_SIZE; i++) {
+        unsigned char* mac_str = int_to_mac((*pool).ADDR_LIST[i].MAC_ADDR);
+        unsigned char* ip_str = int_to_ip((*pool).ADDR_LIST[i].IP_ADDR);
+        time_t lease_epoch = (*pool).ADDR_LIST[i].LEASE;
+
+        if ((*pool).ADDR_LIST[i].IP_ADDR == (*pool).DEFAULT_GATEWAY)
+            continue;
+        
+
+        if ((*pool).ADDR_LIST[i].AVAILABLE)
+            continue;
+
+        printf("%s      ", mac_str);
+        printf("%d.%d.%d.%d         ", ip_str[0],ip_str[1],ip_str[2],ip_str[3]);
+        printf("%lu\n", lease_epoch);
+    }
 }
 
 /******************************* DHCP OPERATIONS ********************************/
@@ -228,13 +311,20 @@ void* DHCPOFFER(void* args) {
     uint32_t yiaddr;
     int yiaddr_pos; // IP offered to client's position, if the operation fails or declines
     char opt_lease[64] = "IP_LEASE_TIME=";
-    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPOFFER\n";
+    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPOFFER";
+    unsigned char* lease_time_str = int_to_str(address_pool.LEASE_TIME);
     
-    strcat(opt_lease, int_to_str(address_pool.LEASE_TIME));
+    strcat(opt_lease, lease_time_str);
     strcat(opt_lease, "\n");
 
+    free(lease_time_str);
+
     for (int i = 0; i < address_pool.ADDR_LIST_SIZE; i++) {
-        if (address_pool.ADDR_LIST[i].AVAILABLE) {
+
+        if (address_pool.ADDR_LIST[i].IP_ADDR == address_pool.DEFAULT_GATEWAY)
+            continue;
+
+        if (address_pool.ADDR_LIST[i].AVAILABLE || (address_pool.ADDR_LIST[i].AVAILABLE && time(NULL) >= address_pool.ADDR_LIST[i].LEASE)) {
             yiaddr = address_pool.ADDR_LIST[i].IP_ADDR;
             address_pool.ADDR_LIST[i].AVAILABLE = 0; // IP reservation for the operation
             yiaddr_pos = i;
@@ -245,19 +335,49 @@ void* DHCPOFFER(void* args) {
     serialize_int(client_args.buffer, 2, 0, 1);
     serialize_int(client_args.buffer, yiaddr, 16, 4);
     serialize_int(client_args.buffer, client_args.server_addr.sin_addr.s_addr, 20, 4);
+    serialize_char(client_args.buffer, opt_lease, 236);
+    serialize_char(client_args.buffer, opt_message_type, 236 + strlen(opt_lease));
+
+    sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
+}
+
+void* DHCPACK (void* args) {
+    socket_data client_args = *(socket_data*)args;
+    uint32_t offered_ip;
+    char opt_lease[64] = "IP_LEASE_TIME=";
+    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPACK";
+    unsigned char* lease_time_str = int_to_str(address_pool.LEASE_TIME);
+    
+    strcat(opt_lease, lease_time_str);
+    strcat(opt_lease, "\n");
+
+    free(lease_time_str);
+
+    offered_ip = (uint32_t) get_nbyte_number(client_args.buffer, 16, 4);
+    for (int i = 0; i < address_pool.ADDR_LIST_SIZE; i++) {
+        if (address_pool.ADDR_LIST[i].IP_ADDR == offered_ip) {
+            address_pool.ADDR_LIST[i].MAC_ADDR = get_nbyte_number(client_args.buffer, 28, 16);
+            address_pool.ADDR_LIST[i].LEASE = get_lease(address_pool.LEASE_TIME);
+        }
+    }
+
+    serialize_int(client_args.buffer, 0, 232, UDP_PACKET_SIZE - 232);
     serialize_char(client_args.buffer, opt_lease, 232);
     serialize_char(client_args.buffer, opt_message_type, 232 + strlen(opt_lease));
 
     sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
 }
 
-void DHCPACK (void* args) {
+void* DHCPNAK (void* args) {
     socket_data client_args = *(socket_data*)args;
-    
+    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPACK";
 }
 
-int main() {
+/**************************** MENU ************************************/
+
+void* server_initialize() {
     struct sockaddr_in server_addr, client_addr;
+    const DHCP_FUNCTIONS dhcp_func_table[] = {&DHCPOFFER, &DHCPACK};
     socklen_t clientLength;
 
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -278,8 +398,17 @@ int main() {
     set_network_params(&address_pool);
     show_network_params(&address_pool);
 
+    pthread_t menu_thread;
+
+    /*
+        Connection loop. All requests will be managed in this loop.
+        Every DHCP message will be managed on a seperate thread,
+        allowing to use this thread for serving any request.
+    */
+
     while (1) {
-        unsigned buffer[UDP_PACKET_SIZE]; // Initialize buffer for messages
+        unsigned char buffer[UDP_PACKET_SIZE]; // Initialize buffer for messages
+
         bzero(buffer, UDP_PACKET_SIZE); // Fill all the bytes in the buffer with zeros
 
         recvfrom(socketfd, buffer, UDP_PACKET_SIZE, 0, (struct sockaddr*) &client_addr, &clientLength);
@@ -293,10 +422,34 @@ int main() {
 
         pthread_t child_th; // Store the created child thread
 
-        if (pthread_create(&child_th, NULL, &DHCPOFFER, &th_arg) != 0)
+        if (get_dhcp_message(buffer) == -1) {
+            printf("Non valid DHCP message received.");
+            continue;
+        }
+
+        if (pthread_create(&child_th, NULL, dhcp_func_table[get_dhcp_message(buffer)], &th_arg) != 0)
             error("There was an error creating a child process.");
+
     }
 
     close(socketfd);
+}
+
+
+int main() {
+
+    pthread_t dhcp_listen;
+
+
+    if (pthread_create(&dhcp_listen, NULL, &server_initialize, NULL) != 0)
+        error("There was an error creating a child process.");
+
+    while(1) {
+        printf("\n\n%s\n", "Press enter to check current leases");
+        getchar();
+        show_lease(&address_pool);
+    }
+
+
     return 0;
 }
