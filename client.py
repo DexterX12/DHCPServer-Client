@@ -5,13 +5,51 @@ import uuid
 BROADCAST_IP = "255.255.255.255"
 DHCP_PORT = 67
 
+class CLIENT_NETWORK_PARAMS:
+    def __init__(self):
+        self.__ip_address = 0
+        self.__subnet_mask = 0
+        self.__default_gateway = 0
+        self.__dns_address = 0
+        self.__lease_exp = 0
+    
+    def set_ip_address(self, ip):
+        self.__ip_address = ip
+    
+    def set_subnet_mask(self, subnet):
+        self.__subnet_mask = subnet
+    
+    def set_default_gateway(self, gateway):
+        self.__default_gateway = gateway
 
-class DHCP_connection:
+    def set_dns_address(self, dns):
+        self.__dns_address = dns
+
+    def set_lease_expiration (self, lease_epoch):
+        self.__lease_exp = lease_epoch
+
+    def get_ip_address(self):
+        return self.__ip_address
+    
+    def get_subnet_mask(self):
+        return self.__subnet_mask
+    
+    def get_default_gateway(self):
+        return self.__default_gateway
+    
+    def get_dns_address(self):
+        return self.__dns_address
+    
+    def get_lease_expiration (self):
+        return self.__lease_exp
+    
+
+class DHCP_CONNECTION:
     def __init__(self):
         self.transaction_id = randint(0, 2**(32-1)).to_bytes(4, "big")
         self.hardware_id = uuid.getnode().to_bytes(16, "big")
 
-    def DHCP_discover(self):
+    def DHCPDISCOVER(self):
         options = ["IP_LEASE_TIME=", "DHCP_MESSAGE_TYPE=DHCPDISCOVER"]
         options_str = "\n".join(options)
 
@@ -42,17 +80,34 @@ class DHCP_connection:
 
         return packet
 
-    def DHCP_Request(self, packet):
+    def DHCPREQUEST(self, packet):
         # Suppose this thing is printing all the necessary info... (TODO!)
         # We say it's ok! please give me some of that IP params greatness!
 
         packet_mutable = bytearray(packet) # Create a mutable version of the packet
 
-        packet_mutable[0] = (1).to_bytes(1, "big"); # Is a REQUEST type of operation
+        #packet_mutable[0] = (1).to_bytes(1, "big"); # Is a REQUEST type of operation
         
         # Decode the options received from server and replace the DHCP message type
         options = packet_mutable[236:].decode('ascii', "ignore").replace("DHCPOFFER", "DHCPREQUEST")
+
+        # Set the replaced options as bytes inside the null-filled option bytearray
+        packet_mutable[236:] = bytes(options, "ascii")
         
+        # Return the packet as a byte string (inmutable)
+        return bytes(packet_mutable)
+    
+    def renew_lease(self, client_ip):
+        # Create a "base" DHCP packet with the DISCOVER message
+        packet_mutable = bytearray(self.DHCPDISCOVER())
+
+        # Put the client's ip inside the packet
+        packet_mutable[16:20] = bytes(client_ip, "ascii", "ignore")
+
+        # Decode the options received from server and replace the DHCP message type
+        # RENEWING state is specified as a DHCPREQUEST message by the RFC2131
+        options = packet_mutable[236:].decode('ascii', "ignore").replace("DHCPOFFER", "DHCPREQUEST")
+
         # Create a NULL filled byte array with the minimum size of the options field (312)
         options_byte = bytearray([0 for i in range(0, 312)])
 
@@ -65,6 +120,8 @@ class DHCP_connection:
         # Return the packet as a byte string (inmutable)
         return bytes(packet_mutable)
 
+
+
 if __name__ == "__main__":
     mysock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
@@ -73,22 +130,35 @@ if __name__ == "__main__":
 
     # Bind the current client local address to any available port
     mysock.bind(("0.0.0.0", socket.INADDR_ANY))
+    mysock.settimeout(1)
 
     print("PYTHON CLIENT")
-    dhcp = DHCP_connection()
+    dhcp = DHCP_CONNECTION()
 
     while True:
-        packet_sent = dhcp.DHCP_discover()
+        packet_sent = dhcp.DHCPDISCOVER()
         message = bytes(input("Press enter to send a DHCP Discover && Request message") + "\n", 'utf-8')
         mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
         print(f"The id for the transaction is: {int.from_bytes(dhcp.transaction_id, 'big')}")
         print(f"This pc's hardware id is: {int.from_bytes(dhcp.hardware_id, 'big')}")
         buffer, connection_address = mysock.recvfrom(576)
-        print("Packet received from server: ")
-        print(buffer)
 
-        packet_sent = dhcp.DHCP_Request(buffer);
+        if len(buffer) == 0:
+            print("Failed trying to reach DHCP Server... Trying again")
+            break
+        
+        print("Successfully connected to DHCP Server...")
+
+        packet_sent = dhcp.DHCPREQUEST(buffer);
         mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
         buffer, connection_address = mysock.recvfrom(576)
-        print("Packet received from server: ")
-        print(buffer);
+
+        print("DHCP Server has sent the following parameters: ")
+
+        print(buffer[236:].decode())
+#     print(f"""IP: {str(buffer[16]) + "." + str(buffer[17]) + "." + str(buffer[18]) + "." + str(buffer[19])}
+# SUBNET MASK: {str(buffer[16]) + "." + str(buffer[17]) + "." + str(buffer[18]) + "." + str(buffer[19])}
+# DEFAULT GATEWAY: {str(buffer[16]) + "." + str(buffer[17]) + "." + str(buffer[18]) + "." + str(buffer[19])}
+# DNS SERVER: {str(buffer[16]) + "." + str(buffer[17]) + "." + str(buffer[18]) + "." + str(buffer[19])}
+# LEASE TIME: {str(buffer[16]) + "." + str(buffer[17]) + "." + str(buffer[18]) + "." + str(buffer[19])}
+# """)

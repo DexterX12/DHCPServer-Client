@@ -245,10 +245,6 @@ uint64_t get_nbyte_number(char* buffer, int offset, int bytes) {
     return number;
 }
 
-uint32_t get_ip(struct sockaddr* ip_address) {
-    return (*(struct sockaddr_in*)ip_address).sin_addr.s_addr;
-}
-
 void print_packet(char* buffer, int size) {
     for (int i = 0; i < size; i++) {
         printf("%02x ", (u_int8_t)buffer[i]);
@@ -309,24 +305,43 @@ void show_lease (addr_pool* pool) {
 void* DHCPOFFER(void* args) {
     socket_data client_args = *(socket_data*)args;
     uint32_t yiaddr;
+    uint64_t chaddr; // MAC address of the client
     int yiaddr_pos; // IP offered to client's position, if the operation fails or declines
     char opt_lease[64] = "IP_LEASE_TIME=";
-    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPOFFER";
-    unsigned char* lease_time_str = int_to_str(address_pool.LEASE_TIME);
+    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPOFFER\n";
+    char opt_subnet[64] = "SUBNET_MASK=";
+    char opt_gateway[64] = "DEFAULT_GATEWAY=";
+    char opt_dns[64] = "DNS_SERVER=";
+    char options[312];
     
-    strcat(opt_lease, lease_time_str);
-    strcat(opt_lease, "\n");
+    sprintf(opt_lease + strlen(opt_lease), "%i\n", address_pool.LEASE_TIME);
+    sprintf(opt_subnet + strlen(opt_subnet), "%u\n", address_pool.SUBNET_MASK);
+    sprintf(opt_gateway + strlen(opt_gateway), "%u\n", address_pool.DEFAULT_GATEWAY);
+    sprintf(opt_dns + strlen(opt_dns), "%u", address_pool.DNS);
+    chaddr = get_nbyte_number(client_args.buffer, 28, 16);
 
-    free(lease_time_str);
+    strcat(options, opt_lease);
+    strcat(options, opt_message_type);
+    strcat(options, opt_subnet);
+    strcat(options, opt_gateway);
+    strcat(options, opt_dns);
 
     for (int i = 0; i < address_pool.ADDR_LIST_SIZE; i++) {
+        addr_lease* current_lease = &address_pool.ADDR_LIST[i];
 
-        if (address_pool.ADDR_LIST[i].IP_ADDR == address_pool.DEFAULT_GATEWAY)
+        if (current_lease->IP_ADDR == address_pool.DEFAULT_GATEWAY)
             continue;
 
-        if (address_pool.ADDR_LIST[i].AVAILABLE || (address_pool.ADDR_LIST[i].AVAILABLE && time(NULL) >= address_pool.ADDR_LIST[i].LEASE)) {
-            yiaddr = address_pool.ADDR_LIST[i].IP_ADDR;
-            address_pool.ADDR_LIST[i].AVAILABLE = 0; // IP reservation for the operation
+        // What if the client didn't "gracefully shutdown"?
+        if (current_lease->AVAILABLE == 0 && time(NULL) < current_lease->LEASE && current_lease->MAC_ADDR == chaddr) {
+            yiaddr = current_lease->IP_ADDR; // Offer the registered IP address
+            break;
+        }
+
+        if (current_lease->AVAILABLE ||
+           (current_lease->AVAILABLE == 0 && time(NULL) >= current_lease->LEASE)) {
+            yiaddr = current_lease->IP_ADDR;
+            current_lease->AVAILABLE = 0; // IP reservation for the operation
             yiaddr_pos = i;
             break;
         }
@@ -335,36 +350,74 @@ void* DHCPOFFER(void* args) {
     serialize_int(client_args.buffer, 2, 0, 1);
     serialize_int(client_args.buffer, yiaddr, 16, 4);
     serialize_int(client_args.buffer, client_args.server_addr.sin_addr.s_addr, 20, 4);
-    serialize_char(client_args.buffer, opt_lease, 236);
-    serialize_char(client_args.buffer, opt_message_type, 236 + strlen(opt_lease));
-
+    serialize_int(client_args.buffer, 0, 236, 312);
+    serialize_char(client_args.buffer, options, 236);
+    
     sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
 }
 
 void* DHCPACK (void* args) {
     socket_data client_args = *(socket_data*)args;
-    uint32_t offered_ip;
+    uint32_t client_addr; // Offered IP to client or current client's address
+    uint32_t siaddr; // This server's address
+    uint64_t chaddr; 
     char opt_lease[64] = "IP_LEASE_TIME=";
-    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPACK";
-    unsigned char* lease_time_str = int_to_str(address_pool.LEASE_TIME);
+    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPACK\n";
+    char* lease_time_str = int_to_str(address_pool.LEASE_TIME);
+    char options[312];
+    bzero(options, sizeof(options));
     
     strcat(opt_lease, lease_time_str);
     strcat(opt_lease, "\n");
-
+    strcat(options, opt_lease);
+    strcat(options, opt_message_type);
     free(lease_time_str);
 
-    offered_ip = (uint32_t) get_nbyte_number(client_args.buffer, 16, 4);
+    int newline_counter = 0;
+    for (int i = 0; i < sizeof(client_args.buffer) / sizeof(client_args.buffer[0]); i++) {
+        
+        if (newline_counter == 2) {
+            strcat(options, client_args.buffer + i);
+            break;
+        }
+        
+        if (client_args.buffer[i] == '\n')
+            newline_counter += 1;
+    }
+
+    siaddr = get_nbyte_number(client_args.buffer, 20, 4);
+    chaddr = get_nbyte_number(client_args.buffer, 28, 16);
+
+    if (get_nbyte_number(client_args.buffer, 16, 4) != 0)
+        client_addr = (uint32_t) get_nbyte_number(client_args.buffer, 16, 4);
+    else
+        client_addr = (uint32_t) get_nbyte_number(client_args.buffer, 12, 4);
+
     for (int i = 0; i < address_pool.ADDR_LIST_SIZE; i++) {
-        if (address_pool.ADDR_LIST[i].IP_ADDR == offered_ip) {
-            address_pool.ADDR_LIST[i].MAC_ADDR = get_nbyte_number(client_args.buffer, 28, 16);
-            address_pool.ADDR_LIST[i].LEASE = get_lease(address_pool.LEASE_TIME);
+        addr_lease* current_lease = &address_pool.ADDR_LIST[i];
+
+        if (current_lease->IP_ADDR == client_addr) {
+
+            // What if the client didn't "gracefully shutdown"?
+            if (current_lease->AVAILABLE == 0 && time(NULL) < current_lease->LEASE && current_lease->MAC_ADDR == chaddr) {
+                // Just exit from the loop, the offered IP is the same that existed before
+                break;
+            }
+
+            // Incoming DHCPREQUEST implies client is in RENEWING state
+            if (siaddr == 0 && get_nbyte_number(client_args.buffer, 12, 4)) {
+                current_lease->LEASE += address_pool.LEASE_TIME;
+                break;
+            }
+
+            current_lease->MAC_ADDR = get_nbyte_number(client_args.buffer, 28, 16);
+            current_lease->LEASE = get_lease(address_pool.LEASE_TIME);
+            break;
         }
     }
 
-    serialize_int(client_args.buffer, 0, 232, UDP_PACKET_SIZE - 232);
-    serialize_char(client_args.buffer, opt_lease, 232);
-    serialize_char(client_args.buffer, opt_message_type, 232 + strlen(opt_lease));
-
+    serialize_int(client_args.buffer, 0, 236, 312);
+    serialize_char(client_args.buffer, options, 236);
     sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
 }
 
@@ -429,12 +482,10 @@ void* server_initialize() {
 
         if (pthread_create(&child_th, NULL, dhcp_func_table[get_dhcp_message(buffer)], &th_arg) != 0)
             error("There was an error creating a child process.");
-
     }
 
     close(socketfd);
 }
-
 
 int main() {
 
