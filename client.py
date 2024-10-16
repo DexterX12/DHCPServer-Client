@@ -1,10 +1,14 @@
 import socket
 from random import randint
 import uuid
+import struct
 
 BROADCAST_IP = "255.255.255.255"
 DHCP_PORT = 67
 
+#Entero a IP - Usa socket y struct
+def int_to_ip(integer):
+    return socket.inet_ntoa(struct.pack('!I', integer))
 
 class DHCP_connection:
     def DHCP_discover(self):
