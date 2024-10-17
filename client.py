@@ -3,7 +3,7 @@ from random import randint
 import uuid
 import struct
 
-BROADCAST_IP = "255.255.255.255"
+BROADCAST_IP = "158.247.127.78"
 DHCP_PORT = 67
 
 #Entero a IP - Usa socket y struct
@@ -162,5 +162,12 @@ if __name__ == "__main__":
         buffer, connection_address = mysock.recvfrom(576)
 
         print("DHCP Server has sent the following parameters: ")
+        print(f'IP-ADRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
 
-        print(buffer[236:].decode())
+        #Terminar
+        for line in buffer[236:].decode("ascii","ignore").split('\n'):
+            if line.startswith("IP_LEASE_TIME") or line.startswith("DHCP_MESSAGE_TYPE"):
+                print(f"{line}") #Imprimir la línea tal cual
+            else:
+                key, value = line.split('=') #Separar en nombre y valor para convertir de int a ip
+                print(f"{key} = {int_to_ip(int(value.strip("\x00")))}")
