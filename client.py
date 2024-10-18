@@ -185,7 +185,8 @@ if __name__ == "__main__":
     try:
         buffer, connection_address = mysock.recvfrom(576)
     except TimeoutError:
-        print("Failed trying to reach DHCP Server... Trying again")
+        print("Failed trying to reach DHCP Server...")
+        exit(1)
     
     print("Successfully connected to DHCP Server...")
 
@@ -195,7 +196,7 @@ if __name__ == "__main__":
     buffer, connection_address = mysock.recvfrom(576)
 
     print("DHCP Server has sent the following parameters: ")
-    print(f'IP-ADRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
+    print(f'IP-ADDRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
 
     for line in buffer[236:].decode("ascii","ignore").split('\n'):
         if line.startswith("IP_LEASE_TIME") or line.startswith("DHCP_MESSAGE_TYPE"):
@@ -214,12 +215,9 @@ if __name__ == "__main__":
     cliente.set_subnet_mask(int(dicti["SUBNET_MASK"]))
     cliente.set_lease_expiration(total_time)
 
-    update_counter = 0
-
     while(True):
         server_lease = int(ip_lease(buffer[236:])[1])
         if ((cliente.get_lease_expiration() - time()) <= (server_lease/2)):
-            print(cliente.get_lease_expiration())
             packet = dhcp.renew_lease(cliente.get_ip_address())
             mysock.sendto(packet, (BROADCAST_IP, DHCP_PORT))
             buffer, connection_address = mysock.recvfrom(576)
@@ -227,7 +225,5 @@ if __name__ == "__main__":
             message = options.splitlines()[1].split("=")[1]
             if (message == "DHCPACK"):
                 cliente.set_lease_expiration(cliente.get_lease_expiration() + server_lease)
-                update_counter += 1
-                print(f"IP_ADDRESS renewed with try: {update_counter}")
-                print(cliente.get_lease_expiration())
+                print(f"IP Lease time has been renewed! New expire time: {int(cliente.get_lease_expiration())}")
     
