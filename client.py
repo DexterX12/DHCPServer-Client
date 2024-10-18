@@ -111,7 +111,7 @@ class DHCP_CONNECTION:
         packet_mutable = bytearray(self.DHCPDISCOVER())
 
         # Put the client's ip inside the packet
-        packet_mutable[16:20] = bytes(client_ip, "ascii", "ignore")
+        packet_mutable[16:20] = int.to_bytes(client_ip,"big")
 
         # Decode the options received from server and replace the DHCP message type
         # RENEWING state is specified as a DHCPREQUEST message by the RFC2131
@@ -152,7 +152,7 @@ def ip_lease(buffer):
 
     total_lease = int(ip_lease_time) + actual_hour_seconds()
     
-    return total_lease
+    return total_lease, ip_lease_time
 
 def buffer_lines(buffer_ip, buffer):
     buffer_data_ip = int.from_bytes(buffer_ip, "big")
@@ -207,7 +207,6 @@ if __name__ == "__main__":
     print("DHCP Server has sent the following parameters: ")
     print(f'IP-ADRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
 
-    #Terminar
     for line in buffer[236:].decode("ascii","ignore").split('\n'):
         if line.startswith("IP_LEASE_TIME") or line.startswith("DHCP_MESSAGE_TYPE"):
             print(f"{line}") #Imprimir la línea tal cual
@@ -216,12 +215,28 @@ if __name__ == "__main__":
             print(f"{key} = {int_to_ip(int(value.strip("\x00")))}")
 
     dicti = buffer_lines(buffer[16:20], buffer[236:])
-    total_time = ip_lease(buffer[236:])
+    total_time = ip_lease(buffer[236:])[0]
     
-    cliente.set_ip_address(dicti["IP-ADDRESS"])
-    cliente.set_default_gateway(dicti["DEFAULT_GATEWAY"])
-    cliente.set_dns_address(dicti["DNS_SERVER"])
-    cliente.set_subnet_mask(dicti["SUBNET_MASK"])
+    cliente.set_ip_address(int(dicti["IP-ADDRESS"]))
+    cliente.set_default_gateway(int(dicti["DEFAULT_GATEWAY"]))
+    cliente.set_dns_address(int(dicti["DNS_SERVER"]))
+    cliente.set_subnet_mask(int(dicti["SUBNET_MASK"]))
     cliente.set_lease_expiration(total_time)
+
+    while(True):
+        server_lease = int(ip_lease(buffer[236:])[1])
+        
+        if ((cliente.get_lease_expiration() - actual_hour_seconds()) <= (server_lease/2)):
+            print(cliente.get_lease_expiration())
+            packet = dhcp.renew_lease(cliente.get_ip_address())
+            mysock.sendto(packet, (BROADCAST_IP, DHCP_PORT))
+            buffer, connection_address = mysock.recvfrom(576)
+            options = buffer[236:].decode()
+            message = options.splitlines()[1].split("=")[1]
+            if (message == "DHCPACK"):
+                cliente.set_lease_expiration(cliente.get_lease_expiration() + server_lease)
+                print("IP_ADDRESS renewed")
+            print(cliente.get_lease_expiration())
+
 
     
