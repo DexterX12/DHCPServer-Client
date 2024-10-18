@@ -2,6 +2,7 @@ import socket
 from random import randint
 import uuid
 import struct
+from datetime import datetime
 
 BROADCAST_IP = "158.247.127.78"
 DHCP_PORT = 67
@@ -127,6 +128,48 @@ class DHCP_CONNECTION:
         
         # Return the packet as a byte string (inmutable)
         return bytes(packet_mutable)
+    
+def actual_hour_seconds():
+    actual_hour=datetime.now()
+
+    hour=actual_hour.hour
+    minute=actual_hour.minute
+    second=actual_hour.second
+
+    total_seconds = (hour*3600) + (minute*60) + second
+
+    return total_seconds
+
+def ip_lease(buffer):
+    buffer_data = buffer.decode()
+    lines = buffer_data.splitlines()
+    ip_lease_time=None
+
+    for line in lines:
+        if line.startswith("IP_LEASE_TIME="):
+            ip_lease_time = line.split("=")[1]
+            break
+
+    total_lease = int(ip_lease_time) + actual_hour_seconds()
+    
+    return total_lease
+
+def buffer_lines(buffer_ip, buffer):
+    buffer_data_ip = int.from_bytes(buffer_ip, "big")
+    param_dict = dict()
+    param_dict["IP-ADDRESS"] = buffer_data_ip
+    buffer_data = buffer.decode()
+    lines = buffer_data.splitlines()
+    for line in lines:
+        if line.startswith("SUBNET_MASK"):
+            param_dict["SUBNET_MASK"] = line.split("=")[1]
+        elif line.startswith("DEFAULT_GATEWAY"):
+            param_dict["DEFAULT_GATEWAY"] = line.split("=")[1]
+        elif line.startswith("DNS_SERVER"):
+            param_dict["DNS_SERVER"] = line.split("=")[1].strip("\x00")
+
+    return param_dict
+
 
 
 
@@ -143,31 +186,42 @@ if __name__ == "__main__":
     print("PYTHON CLIENT")
     dhcp = DHCP_CONNECTION()
 
-    while True:
-        packet_sent = dhcp.DHCPDISCOVER()
-        message = bytes(input("Press enter to send a DHCP Discover && Request message") + "\n", 'utf-8')
-        mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
-        print(f"The id for the transaction is: {int.from_bytes(dhcp.transaction_id, 'big')}")
-        print(f"This pc's hardware id is: {int.from_bytes(dhcp.hardware_id, 'big')}")
-        try:
-            buffer, connection_address = mysock.recvfrom(576)
-        except TimeoutError:
-            print("Failed trying to reach DHCP Server... Trying again")
-            break
-        
-        print("Successfully connected to DHCP Server...")
+    cliente = CLIENT_NETWORK_PARAMS()
 
-        packet_sent = dhcp.DHCPREQUEST(buffer);
-        mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
+    packet_sent = dhcp.DHCPDISCOVER()
+    message = bytes(input("Press enter to send a DHCP Discover && Request message") + "\n", 'utf-8')
+    mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
+    print(f"The id for the transaction is: {int.from_bytes(dhcp.transaction_id, 'big')}")
+    print(f"This pc's hardware id is: {int.from_bytes(dhcp.hardware_id, 'big')}")
+    try:
         buffer, connection_address = mysock.recvfrom(576)
+    except TimeoutError:
+        print("Failed trying to reach DHCP Server... Trying again")
+    
+    print("Successfully connected to DHCP Server...")
 
-        print("DHCP Server has sent the following parameters: ")
-        print(f'IP-ADRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
+    packet_sent = dhcp.DHCPREQUEST(buffer);
+    mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
+    buffer, connection_address = mysock.recvfrom(576)
 
-        #Terminar
-        for line in buffer[236:].decode("ascii","ignore").split('\n'):
-            if line.startswith("IP_LEASE_TIME") or line.startswith("DHCP_MESSAGE_TYPE"):
-                print(f"{line}") #Imprimir la línea tal cual
-            else:
-                key, value = line.split('=') #Separar en nombre y valor para convertir de int a ip
-                print(f"{key} = {int_to_ip(int(value.strip("\x00")))}")
+    print("DHCP Server has sent the following parameters: ")
+    print(f'IP-ADRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
+
+    #Terminar
+    for line in buffer[236:].decode("ascii","ignore").split('\n'):
+        if line.startswith("IP_LEASE_TIME") or line.startswith("DHCP_MESSAGE_TYPE"):
+            print(f"{line}") #Imprimir la línea tal cual
+        else:
+            key, value = line.split('=') #Separar en nombre y valor para convertir de int a ip
+            print(f"{key} = {int_to_ip(int(value.strip("\x00")))}")
+
+    dicti = buffer_lines(buffer[16:20], buffer[236:])
+    total_time = ip_lease(buffer[236:])
+    
+    cliente.set_ip_address(dicti["IP-ADDRESS"])
+    cliente.set_default_gateway(dicti["DEFAULT_GATEWAY"])
+    cliente.set_dns_address(dicti["DNS_SERVER"])
+    cliente.set_subnet_mask(dicti["SUBNET_MASK"])
+    cliente.set_lease_expiration(total_time)
+
+    
