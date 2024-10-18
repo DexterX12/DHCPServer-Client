@@ -59,6 +59,7 @@ class DHCP_CONNECTION:
         self.transaction_id = randint(0, 2**(32-1)).to_bytes(4, "big")
         self.hardware_id = uuid.getnode().to_bytes(16, "big")
 
+    # Returns an empty DHCP packet with the message type DHCPDISCOVER
     def DHCPDISCOVER(self):
         options = ["IP_LEASE_TIME=", "DHCP_MESSAGE_TYPE=DHCPDISCOVER"]
         options_str = "\n".join(options)
@@ -90,8 +91,8 @@ class DHCP_CONNECTION:
 
         return packet
 
+    # Returns a DHCPREQUEST packet based of the message type received from server
     def DHCPREQUEST(self, packet):
-        # Suppose this thing is printing all the necessary info... (TODO!)
         # We say it's ok! please give me some of that IP params greatness!
 
         packet_mutable = bytearray(packet) # Create a mutable version of the packet
@@ -107,6 +108,8 @@ class DHCP_CONNECTION:
         # Return the packet as a byte string (inmutable)
         return bytes(packet_mutable)
     
+    # Returns a DHCPREQUEST packet based of the message type received from server
+    # with this client IP only, allowing the server to identify the message as RENEWING
     def renew_lease(self, client_ip):
         # Create a "base" DHCP packet with the DISCOVER message
         packet_mutable = bytearray(self.DHCPDISCOVER())
@@ -130,6 +133,8 @@ class DHCP_CONNECTION:
         # Return the packet as a byte string (inmutable)
         return bytes(packet_mutable)
     
+    # Returns a DHCPRELEASE packet which tells the server to stop reserving the
+    # offered IP to this client
     def release_lease(self, client_ip):
         # Create a "base" DHCP packet with the DISCOVER message
         packet_mutable = bytearray(self.DHCPDISCOVER())
@@ -154,6 +159,9 @@ class DHCP_CONNECTION:
         # Return the packet as a byte string (inmutable)
         return bytes(packet_mutable)
 
+
+# Returns the lease expiration date for this client based of the offered lease by the server
+# in seconds (EPOCH TIME)
 def ip_lease(buffer):
     buffer_data = buffer.decode()
     lines = buffer_data.splitlines()
@@ -168,6 +176,9 @@ def ip_lease(buffer):
     
     return total_lease, ip_lease_time
 
+# Returns a dictionary with accessible fields originally sent by the server 
+# in the OPTIONS field
+# Accessible fields: yiaddr, SUBNET_MASK, GATEWAY, DNS
 def buffer_lines(buffer_ip, buffer):
     buffer_data_ip = int.from_bytes(buffer_ip, "big")
     param_dict = dict()
@@ -184,10 +195,13 @@ def buffer_lines(buffer_ip, buffer):
 
     return param_dict
 
+# Infinite loop that allows calculation of the next IP Lease renewal
+# The calculation is made by getting the remaining time of the lease
+# and comparing it with a percentage of the lease offered by the server
 def renewal_loop(buffer, dhcp, client, sock):
-
     while(True):
         server_lease = int(ip_lease(buffer[236:])[1])
+        # If remaining lease time is equal or less than half of the offered lease
         if ((client.get_lease_expiration() - time()) <= (server_lease/2)):
             packet = dhcp.renew_lease(client.get_ip_address())
             sock.sendto(packet, (BROADCAST_IP, DHCP_PORT))
@@ -228,12 +242,12 @@ if __name__ == "__main__":
     
     print("Successfully connected to DHCP Server...")
 
-    print(int.from_bytes(buffer[20:24], "big"))
     packet_sent = dhcp.DHCPREQUEST(buffer);
     mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
     buffer, connection_address = mysock.recvfrom(576)
 
-    print("DHCP Server has sent the following parameters: ")
+    print("DHCP Server has sent the following parameters:\n")
+    print("-"*20)
     print(f'IP-ADDRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
 
     for line in buffer[236:].decode("ascii","ignore").split('\n'):
@@ -243,7 +257,8 @@ if __name__ == "__main__":
             key, value = line.split('=') #Separar en nombre y valor para convertir de int a ip
             value_formated = value.strip('\x00')
             print(f"{key} = {int_to_ip(int(value_formated))}")
-
+    print("-"*20)
+    
     dicti = buffer_lines(buffer[16:20], buffer[236:])
     total_time = ip_lease(buffer[236:])[0]
     

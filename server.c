@@ -56,6 +56,12 @@ void error(const char *msg)
     exit(1);
 }
 
+
+/*
+    Converts any integer value to its string representation
+    by printing into a buffer the formatted string with the
+    desired value
+*/
 char* int_to_str(int value) {
     char* buffer;
     int length = snprintf(NULL, 0, "%d", value);
@@ -65,6 +71,10 @@ char* int_to_str(int value) {
     return buffer;
 }
 
+/*
+    Converts a given unsigned long int of 64 bits (a MAC address size more or less)
+    to an hexadecimal representation, in the form of 00:00:00:00:00
+*/
 char* int_to_mac(uint64_t mac) {
     int size = snprintf(NULL, 0, "%lx", mac);
     char hex[size];
@@ -85,6 +95,10 @@ char* int_to_mac(uint64_t mac) {
     return hex_sep;
 }
 
+/*
+    Converts a given unsigned int (32 bits) value to an IPv4 representation X.X.X.X
+    by shifting the value's bytes to their corresponding position 
+*/
 unsigned char* int_to_ip(uint32_t ip) {
     unsigned char* ip_bytes = malloc((sizeof(unsigned char) * 4));
     
@@ -95,6 +109,11 @@ unsigned char* int_to_ip(uint32_t ip) {
 
     return ip_bytes;
 }
+
+/*
+    Converts a given IPv4 representation X.X.X.X to an unsigned int (32 bits)
+    by shifting the value's bytes to their corresponding position 
+*/
 
 uint32_t ip_to_int (unsigned char* ip) {
     uint32_t ip_int = 0;
@@ -115,6 +134,10 @@ uint32_t ip_to_int (unsigned char* ip) {
     return ip_int;
 }
 
+/*
+    Loads the network's identifier (IP), Subnet mask, DNS Server and Lease
+    off of a plain text file and assigns them to the program's addresses pool
+*/
 void set_network_params(addr_pool* pool) {
     FILE* file = fopen("./addresses.txt", "r");
 
@@ -191,10 +214,17 @@ void set_network_params(addr_pool* pool) {
     free(CIDR);
 }
 
+/*
+    Gets the lease expiration date in seconds (EPOCH)
+*/
 time_t get_lease(int base_lease) {
     return time(NULL) + base_lease;
 }
 
+/*
+    Identifies the received DHCP Message and returns its matching DHCP Reply message
+    by searching in the buffer the DHCP_MESSAGE_TYPE field
+*/
 int get_dhcp_message(unsigned char* buffer) {
     unsigned char options[OPTIONS_BYTE_SIZE]; // Initialize buffer for all possible options
     char* token;
@@ -219,6 +249,10 @@ int get_dhcp_message(unsigned char* buffer) {
     return -1;
 }
 
+/*
+    Converts a given unsigned integer to its bytes representation 0xAABBCC
+    into the buffer by shifting the bytes into their corresponding positions
+*/
 void serialize_int(unsigned char* buffer, uint64_t value, int offset, int bytes) {
     int current_offset = offset;
     for (int i = bytes; i > 0; i--) {
@@ -227,12 +261,20 @@ void serialize_int(unsigned char* buffer, uint64_t value, int offset, int bytes)
     }
 }
 
+/*
+    Sets a string of characters into the message buffer
+*/
+
 void serialize_char(unsigned char* buffer, char* value, int offset) {
     for (int i = 0; i < strlen(value); i++) {
         buffer[offset + i] = value[i];
     }
 }
 
+/*
+    Gets the unsigned integer representation of a given amount of bytes
+    in the buffer, by shifting the values to their corresponding positions
+*/
 uint64_t get_nbyte_number(char* buffer, int offset, int bytes) {
     uint64_t number = 0; // accumulator for final number
     int current_offset = offset; // byte position in buffer where number starts
@@ -246,6 +288,11 @@ uint64_t get_nbyte_number(char* buffer, int offset, int bytes) {
     return number;
 }
 
+/*
+    Gets the unsigned integer representation of this host's IP by getting
+    the hostname, then searching the list of entries by the previously returned
+    hostname and finally converting the integer to the machine byte order
+*/
 uint32_t get_host_ip () {
     char host_name[_SC_HOST_NAME_MAX + 1];
     uint32_t IP_address;
@@ -260,7 +307,10 @@ uint32_t get_host_ip () {
     
     IP_address = ntohl(((struct in_addr*) entry->h_addr_list[0])->s_addr);
 }
-
+/*
+    Prints the entire buffer in its bytes representation of 2 elements
+    ex: 0A F0 40 9C
+*/
 void print_packet(char* buffer, int size) {
     for (int i = 0; i < size; i++) {
         printf("%02x ", (u_int8_t)buffer[i]);
