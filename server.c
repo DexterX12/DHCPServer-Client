@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <netdb.h>
 #include <time.h> 
+#include <arpa/inet.h>
 
 #define UDP_PACKET_SIZE 576
 #define OPTIONS_BYTE_SIZE 312
@@ -245,6 +246,21 @@ uint64_t get_nbyte_number(char* buffer, int offset, int bytes) {
     return number;
 }
 
+uint32_t get_host_ip () {
+    char host_name[_SC_HOST_NAME_MAX + 1];
+    uint32_t IP_address;
+
+    int hostname = gethostname(host_name, sizeof(host_name));
+    if (hostname == -1)
+        error("Error retrieving host IP");
+    
+    struct hostent *entry = gethostbyname(host_name);
+    if (!entry)
+        error("Error retrieving host entries");
+    
+    IP_address = ntohl(((struct in_addr*) entry->h_addr_list[0])->s_addr);
+}
+
 void print_packet(char* buffer, int size) {
     for (int i = 0; i < size; i++) {
         printf("%02x ", (u_int8_t)buffer[i]);
@@ -290,7 +306,6 @@ void show_lease (addr_pool* pool) {
         if ((*pool).ADDR_LIST[i].IP_ADDR == (*pool).DEFAULT_GATEWAY)
             continue;
         
-
         if ((*pool).ADDR_LIST[i].AVAILABLE)
             continue;
 
@@ -347,9 +362,11 @@ void* DHCPOFFER(void* args) {
         }
     }
 
+    printf("%u\n", client_args.server_addr.sin_addr.s_addr);
+
     serialize_int(client_args.buffer, 2, 0, 1);
     serialize_int(client_args.buffer, yiaddr, 16, 4);
-    serialize_int(client_args.buffer, client_args.server_addr.sin_addr.s_addr, 20, 4);
+    serialize_int(client_args.buffer, get_host_ip(), 20, 4);
     serialize_int(client_args.buffer, 0, 236, 312);
     serialize_char(client_args.buffer, options, 236);
     
@@ -395,18 +412,17 @@ void* DHCPACK (void* args) {
 
     for (int i = 0; i < address_pool.ADDR_LIST_SIZE; i++) {
         addr_lease* current_lease = &address_pool.ADDR_LIST[i];
-
         if (current_lease->IP_ADDR == client_addr) {
+
+            // Incoming DHCPREQUEST implies client is in RENEWING state
+            if (siaddr == 0) {
+                current_lease->LEASE += address_pool.LEASE_TIME;
+                break;
+            }
 
             // What if the client didn't "gracefully shutdown"?
             if (current_lease->AVAILABLE == 0 && time(NULL) < current_lease->LEASE && current_lease->MAC_ADDR == chaddr) {
                 // Just exit from the loop, the offered IP is the same that existed before
-                break;
-            }
-
-            // Incoming DHCPREQUEST implies client is in RENEWING state
-            if (siaddr == 0 && get_nbyte_number(client_args.buffer, 12, 4)) {
-                current_lease->LEASE += address_pool.LEASE_TIME;
                 break;
             }
 
