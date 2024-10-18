@@ -44,7 +44,7 @@ typedef struct {
 // And be order-independent
 typedef void* (*DHCP_FUNCTIONS)(void*);
 
-const char* DHCP_MESSAGES[] = {"DHCPDISCOVER", "DHCPREQUEST"};
+const char* DHCP_MESSAGES[] = {"DHCPDISCOVER", "DHCPREQUEST", "DHCPRELEASE"};
 addr_pool address_pool;
 
 
@@ -384,15 +384,12 @@ void* DHCPACK (void* args) {
     char options[312];
     bzero(options, sizeof(options));
     
-    strcat(opt_lease, lease_time_str);
-    strcat(opt_lease, "\n");
-    strcat(options, opt_lease);
-    strcat(options, opt_message_type);
+    sprintf(opt_lease + strlen(opt_lease), "%s\n", lease_time_str);
+    sprintf(options + strlen(options), "%s%s", opt_lease, opt_message_type);
     free(lease_time_str);
 
     int newline_counter = 0;
     for (int i = 0; i < sizeof(client_args.buffer) / sizeof(client_args.buffer[0]); i++) {
-        
         if (newline_counter == 2) {
             for (int j = i; j < UDP_PACKET_SIZE; j++) {
                 sprintf(options + strlen(options), "%c", client_args.buffer[j]);
@@ -440,16 +437,33 @@ void* DHCPACK (void* args) {
     sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
 }
 
-void* DHCPNAK (void* args) {
+void* DHCPRELEASE(void* args) {
     socket_data client_args = *(socket_data*)args;
-    char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPACK";
+    uint32_t client_addr; // Offered IP to client or current client's address
+    uint64_t chaddr;
+
+    client_addr = (uint32_t) get_nbyte_number(client_args.buffer, 12, 4);
+    chaddr = get_nbyte_number(client_args.buffer, 28, 16);
+
+    for (int i = 0; i < address_pool.ADDR_LIST_SIZE; i++) {
+        addr_lease* current_lease = &address_pool.ADDR_LIST[i];
+
+        if (current_lease->IP_ADDR == client_addr && current_lease->MAC_ADDR == chaddr) {
+            current_lease->MAC_ADDR = 0;
+            current_lease->LEASE = 0;
+            current_lease->AVAILABLE = 1;
+            break;
+        }
+    }
+
+    sendto(client_args.socketfd, client_args.buffer, sizeof(client_args.buffer), 0, client_args.client_addr, client_args.client_len);
 }
 
 /**************************** MENU ************************************/
 
 void* server_initialize() {
     struct sockaddr_in server_addr, client_addr;
-    const DHCP_FUNCTIONS dhcp_func_table[] = {&DHCPOFFER, &DHCPACK};
+    const DHCP_FUNCTIONS dhcp_func_table[] = {&DHCPOFFER, &DHCPACK, &DHCPRELEASE};
     socklen_t clientLength;
 
     int socketfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -510,7 +524,6 @@ int main() {
 
     pthread_t dhcp_listen;
 
-
     if (pthread_create(&dhcp_listen, NULL, &server_initialize, NULL) != 0)
         error("There was an error creating a child process.");
 
@@ -519,7 +532,6 @@ int main() {
         getchar();
         show_lease(&address_pool);
     }
-
 
     return 0;
 }

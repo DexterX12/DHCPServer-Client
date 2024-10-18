@@ -3,6 +3,7 @@ from random import randint
 import uuid
 import struct
 from time import time
+import threading
 
 BROADCAST_IP = "255.255.255.255"
 DHCP_PORT = 67
@@ -128,6 +129,30 @@ class DHCP_CONNECTION:
         
         # Return the packet as a byte string (inmutable)
         return bytes(packet_mutable)
+    
+    def release_lease(self, client_ip):
+        # Create a "base" DHCP packet with the DISCOVER message
+        packet_mutable = bytearray(self.DHCPDISCOVER())
+
+        # Put the client's ip inside the packet
+        packet_mutable[12:16] = int.to_bytes(client_ip, 4, "big")
+        packet_mutable[28:44] = self.hardware_id
+
+        # Decode the options received from server and replace the DHCP message type
+        # RENEWING state is specified as a DHCPREQUEST message by the RFC2131
+        options = packet_mutable[236:].decode('ascii', "ignore").replace("DHCPDISCOVER", "DHCPRELEASE")
+
+        # Create a NULL filled byte array with the minimum size of the options field (312)
+        options_byte = bytearray([0 for i in range(0, 312)])
+
+        # Set the replaced options as bytes inside the null-filled option bytearray
+        options_byte[:len(options)] = bytes(options, "ascii", "ignore")
+
+        # Modify the original (mutable) packet with the new options
+        packet_mutable[236:] = options_byte
+        
+        # Return the packet as a byte string (inmutable)
+        return bytes(packet_mutable)
 
 def ip_lease(buffer):
     buffer_data = buffer.decode()
@@ -159,6 +184,19 @@ def buffer_lines(buffer_ip, buffer):
 
     return param_dict
 
+def renewal_loop(buffer, dhcp, client, sock):
+
+    while(True):
+        server_lease = int(ip_lease(buffer[236:])[1])
+        if ((client.get_lease_expiration() - time()) <= (server_lease/2)):
+            packet = dhcp.renew_lease(client.get_ip_address())
+            sock.sendto(packet, (BROADCAST_IP, DHCP_PORT))
+            buffer, connection_address = mysock.recvfrom(576)
+            options = buffer[236:].decode()
+            message = options.splitlines()[1].split("=")[1]
+            if (message == "DHCPACK"):
+                client.set_lease_expiration(client.get_lease_expiration() + server_lease)
+                print(f"IP Lease time has been renewed! New expire time: {int(client.get_lease_expiration())}")
 
 
 
@@ -200,7 +238,7 @@ if __name__ == "__main__":
 
     for line in buffer[236:].decode("ascii","ignore").split('\n'):
         if line.startswith("IP_LEASE_TIME") or line.startswith("DHCP_MESSAGE_TYPE"):
-            print(f"{line}") #Imprimir la línea tal cual
+            pass
         else:
             key, value = line.split('=') #Separar en nombre y valor para convertir de int a ip
             value_formated = value.strip('\x00')
@@ -215,15 +253,13 @@ if __name__ == "__main__":
     cliente.set_subnet_mask(int(dicti["SUBNET_MASK"]))
     cliente.set_lease_expiration(total_time)
 
-    while(True):
-        server_lease = int(ip_lease(buffer[236:])[1])
-        if ((cliente.get_lease_expiration() - time()) <= (server_lease/2)):
-            packet = dhcp.renew_lease(cliente.get_ip_address())
-            mysock.sendto(packet, (BROADCAST_IP, DHCP_PORT))
-            buffer, connection_address = mysock.recvfrom(576)
-            options = buffer[236:].decode()
-            message = options.splitlines()[1].split("=")[1]
-            if (message == "DHCPACK"):
-                cliente.set_lease_expiration(cliente.get_lease_expiration() + server_lease)
-                print(f"IP Lease time has been renewed! New expire time: {int(cliente.get_lease_expiration())}")
+    menu = threading.Thread(target=renewal_loop, args=(buffer, dhcp, cliente, mysock, ), daemon=True)
+    menu.start()
+
+    input("Press enter to release your IP and exit the program")
+    packet = dhcp.release_lease(cliente.get_ip_address())
+    mysock.sendto(packet, (BROADCAST_IP, DHCP_PORT))
+    exit(0)
+
+
     
