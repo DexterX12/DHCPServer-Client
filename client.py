@@ -170,7 +170,7 @@ if __name__ == "__main__":
 
     # Bind the current client local address to any available port
     mysock.bind(("0.0.0.0", socket.INADDR_ANY))
-    mysock.settimeout(3)
+    mysock.settimeout(8)
 
     print("PYTHON CLIENT")
     dhcp = DHCP_CONNECTION()

@@ -116,7 +116,7 @@ uint32_t ip_to_int (unsigned char* ip) {
 }
 
 void set_network_params(addr_pool* pool) {
-    FILE* file = fopen("../addresses.txt", "r");
+    FILE* file = fopen("./addresses.txt", "r");
 
     unsigned char line[256];
     unsigned char* token;
@@ -378,9 +378,9 @@ void* DHCPACK (void* args) {
     uint32_t client_addr; // Offered IP to client or current client's address
     uint32_t siaddr; // This server's address
     uint64_t chaddr; 
+    char* lease_time_str = int_to_str(address_pool.LEASE_TIME);
     char opt_lease[64] = "IP_LEASE_TIME=";
     char* opt_message_type = "DHCP_MESSAGE_TYPE=DHCPACK\n";
-    char* lease_time_str = int_to_str(address_pool.LEASE_TIME);
     char options[312];
     bzero(options, sizeof(options));
     
@@ -394,12 +394,15 @@ void* DHCPACK (void* args) {
     for (int i = 0; i < sizeof(client_args.buffer) / sizeof(client_args.buffer[0]); i++) {
         
         if (newline_counter == 2) {
-            strcat(options, client_args.buffer + i);
+            for (int j = i; j < UDP_PACKET_SIZE; j++) {
+                sprintf(options + strlen(options), "%c", client_args.buffer[j]);
+            }
             break;
         }
-        
+
         if (client_args.buffer[i] == '\n')
             newline_counter += 1;
+        
     }
 
     siaddr = get_nbyte_number(client_args.buffer, 20, 4);
