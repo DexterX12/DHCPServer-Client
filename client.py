@@ -236,7 +236,7 @@ if __name__ == "__main__":
     print(f"This pc's hardware id is: {int.from_bytes(dhcp.hardware_id, 'big')}")
     try:
         buffer, connection_address = mysock.recvfrom(576)
-    except TimeoutError:
+    except socket.timeout:
         print("Failed trying to reach DHCP Server...")
         exit(1)
     
@@ -244,14 +244,18 @@ if __name__ == "__main__":
 
     packet_sent = dhcp.DHCPREQUEST(buffer);
     mysock.sendto(packet_sent, (BROADCAST_IP, DHCP_PORT))
-    buffer, connection_address = mysock.recvfrom(576)
+    try:
+        buffer, connection_address = mysock.recvfrom(576)
+    except socket.timeout:
+        print("Failed trying to reach DHCP Server...")
+        exit(1)
 
     print("DHCP Server has sent the following parameters:\n")
     print("-"*20)
     print(f'IP-ADDRESS = {int_to_ip(int.from_bytes(buffer[16:20], "big"))}')
 
     for line in buffer[236:].decode("ascii","ignore").split('\n'):
-        if line.startswith("IP_LEASE_TIME") or line.startswith("DHCP_MESSAGE_TYPE"):
+        if "IP_LEASE_TIME" in line or "DHCP_MESSAGE_TYPE" in line:
             pass
         else:
             key, value = line.split('=') #Separar en nombre y valor para convertir de int a ip
