@@ -14,18 +14,9 @@ if __name__ == "__main__":
     dhcp_server_address = sys.argv[1]
 
     while True:
-        try:
-            buffer, client_address = sock.recvfrom(576)
-        except TimeoutError:
-            buffer, client_address = sock.recvfrom(576)
-
+        buffer, client_address = sock.recvfrom(576)
         sock.sendto(buffer, (dhcp_server_address, 67))
-
-        try:
-            buffer, client_address = sock.recvfrom(576)
-        except TimeoutError:
-            buffer, client_address = sock.recvfrom(576)
-            
+        buffer, server_address = sock.recvfrom(576)
         sock.sendto(buffer, (client_address[0], client_address[1]))
 
 
